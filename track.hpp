@@ -39,15 +39,21 @@ public:
 	std::vector<Vertex> vertices;
 	// indices for EBO
 	std::vector<unsigned int> indices;
+	std::vector<glm::vec3> points;
 
 	// hmax for camera
 	float hmax = 0.0f;
+
+	//for keeping track of the local orientation of the track
+	struct Orientation localOrientation;
 
 
 	// constructor, just use same VBO as before, 
 	Track(const char* trackPath)
 	{
-		
+		//setting local basis
+		localOrientation = { glm::vec3(1, 0, 0), glm::vec3(0, 1, 0), glm::vec3(0, 0, 1), glm::vec3(0, 0, 0) };
+
 		// load Track data
 		load_track(trackPath);
 
@@ -59,9 +65,31 @@ public:
 	// render the mesh
 	void Draw(Shader shader, unsigned int textureID)
 	{
-		/*
-		    Draw the objects here.  
-		*/
+		// Set the shader properties
+		shader.use();
+		glm::mat4 model;
+		model = glm::scale(model, glm::vec3(20.0f, 10.0f, 20.0f));
+		model = glm::scale(model, glm::vec3(200.0f, 100.0f, 200.0f));
+		shader.setMat4("model", model);
+
+
+		// Set material properties
+		shader.setVec3("material.specular", 0.3f, 0.3f, 0.3f);
+		shader.setFloat("material.shininess", 64.0f);
+
+
+		// active proper texture unit before binding
+		glActiveTexture(GL_TEXTURE0);
+		// and finally bind the textures
+		glBindTexture(GL_TEXTURE_2D, textureID);
+
+		// draw mesh
+		glBindVertexArray(VAO);
+		glDrawArrays(GL_TRIANGLES, 0, vertices.size());
+		glBindVertexArray(0);
+
+		// always good practice to set everything back to defaults once configured.
+		glActiveTexture(GL_TEXTURE0);
 	}
 
 	// give a positive float s, find the point by interpolation
@@ -73,13 +101,20 @@ public:
 	{
 		int pA, pB, pC, pD;
 		float u;
+
+		//mod with the number of control points because the track is a loop,
+		//so we need to get back to the front
 		pA = glm::floor(s) - 1;
-		pB = glm::floor(s);
+		pB = glm::floor(s) - 0;
 		pC = glm::floor(s) + 1;
 		pD = glm::floor(s) + 2;
-		u = s - floor(s);
 
-		//TA said to use % num points to get current location along the track (BECAUSE IT IS A LOOP)
+		//could've done above but wouldve required a cast since glm::floor() returns a float
+		pA %= controlPoints.size();
+		pB %= controlPoints.size();
+		pC %= controlPoints.size();
+		pD %= controlPoints.size();
+		u = s - floor(s);
 
 		return interpolate(controlPoints[pA], controlPoints[pB], controlPoints[pC], controlPoints[pD], 0.5f, u);
 	}
@@ -115,7 +150,6 @@ private:
 	//	This should not be a very complicated function
 	glm::vec3 interpolate(glm::vec3 pointA, glm::vec3 pointB, glm::vec3 pointC, glm::vec3 pointD, float tau, float u)
 	{
-		std::cout << "in interpolate\n";
 		return glm::vec4(1, u, u * u, u * u * u) *
 			glm::mat4x4(
 				0,   -tau,   2 * tau,       -tau,
@@ -126,9 +160,6 @@ private:
 				pointA.x, pointB.x, pointC.x, pointD.x,
 				pointA.y, pointB.y, pointC.y, pointD.y,
 				pointA.z, pointB.z, pointC.z, pointD.z);
-
-		// Just returning the first point at the moment, you need to return the interpolated point.  
-		//return pointA; 
 	}
 
 	// Here is the class where you will make the vertices or positions of the necessary objects of the track (calling subfunctions)
@@ -151,12 +182,10 @@ private:
 		//       (look at the pictures from the project description to give you ideas).  
 
 
-		/* COMMENTED OUT OLD CODE*/
-		// Here is just visualizing of using the control points to set the box transformatins with boxes. 
-		//       You can take this code out for your rollercoster, this is just showing you how to access the control points
+		//getting all of the control points
 		glm::vec3 currentpos = glm::vec3(-2.0f, 0.0f, -2.0f);
-		/* iterate throught  the points	g_Track.points() returns the vector containing all the control points */
-		
+
+		//iterate throught  the points	g_Track.points() returns the vector containing all the control points
 		for (pointVectorIter ptsiter = g_Track.points().begin(); ptsiter != g_Track.points().end(); ptsiter++)
 		{
 			/* get the next point from the iterator */
@@ -172,8 +201,34 @@ private:
 			controlPoints.push_back(currentpos*2.0f);
 		}
 
-		//fill the buffer
+
+		//go through all of the control points and make four vertices. Send them to make triangle to push them to the buffer
+		for (float s = 0; s < controlPoints.size(); s += .2)
+		{
+			//interpolated points
+			glm::vec3 pointA, pointB, pointC, pointD;
+
+			//make two triangles using the current point, the point .2 forward, and the point to the left a bit
+			pointA = get_point(s);
+			pointB = get_point(s + .2f);
+			pointC = get_point(s + .2f) + (-2.0f * localOrientation.Right);
+			pointD = get_point(s)       + (-2.0f * localOrientation.Right);
+
+			//this method might make gaps; like you'll have one square, miss the next one, and so on --- nvm we inc by .2 so the next should start where last left off
+			make_triangle(pointA, pointB, pointC, false);
+			make_triangle(pointA, pointC, pointD, false);
+
+			//as we go along use the catmull rom spline to get the different vectors for local orientation
+			localOrientation.Front = glm::normalize(pointA - pointB);
+		}
 		
+		//print out the list of vertices
+		std::cout << "vertices list: \n";
+		for (int i = 0; i < vertices.size(); i++)
+		{
+			printf("(%f, %f, %f)\n", vertices.at(i).Position.x, vertices.at(i).Position.y, vertices.at(i).Position.z);
+		}
+		std::cout << "vertices list ended.\n";
 	}
 
 
@@ -181,8 +236,18 @@ private:
 		// Optional boolean to flip the normal if you need to
 	void make_triangle(glm::vec3 pointA, glm::vec3 pointB, glm::vec3 pointC,bool flipNormal)
 	{
-
-
+		//not doing anything with flip normals just yet
+		Vertex v1, v2, v3;
+		v1.Position = pointA;
+		v2.Position = pointB;
+		v3.Position = pointC;
+		set_normals(v1, v2, v3);
+		v1.TexCoords = glm::vec2(pointA.x, pointA.y);
+		v2.TexCoords = glm::vec2(pointB.x, pointB.y);
+		v3.TexCoords = glm::vec2(pointC.x, pointC.y);
+		vertices.push_back(v1);
+		vertices.push_back(v2);
+		vertices.push_back(v3);
 	}
 
 	// Given two orintations, create the rail between them.  Offset can be useful if you want to call this for more than for multiple rails
@@ -210,14 +275,14 @@ private:
 		glGenBuffers(1, &VBO);
 
 		glBindVertexArray(VAO);
-		// load data into vertex buffers
 		glBindBuffer(GL_ARRAY_BUFFER, VBO);
+		glBufferData(GL_ARRAY_BUFFER, vertices.size() * sizeof(Vertex), &vertices[0], GL_STATIC_DRAW);
 
-
-		// set the vertex attribute pointers
-		// vertex Positions
+		//position coords
 		glEnableVertexAttribArray(0);
 		glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, sizeof(Vertex), (void*)0);
+		
+		
 		// vertex normal coords
 		glEnableVertexAttribArray(1);
 		glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, sizeof(Vertex), (void*)offsetof(Vertex, Normal));
@@ -225,7 +290,7 @@ private:
 		// vertex texture coords
 		glEnableVertexAttribArray(2);
 		glVertexAttribPointer(2, 2, GL_FLOAT, GL_FALSE, sizeof(Vertex), (void*)offsetof(Vertex, TexCoords));
-
+		
 		glBindVertexArray(0);
 	}
 
